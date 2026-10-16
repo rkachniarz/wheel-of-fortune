@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Wheel of Fortune Number</title>
+<style>
+  :root {
+    --bg:#f6f4ef; --fg:#1d1d1f; --accent:#e4572e; --surface:#ffffff; --muted:#6b6b6b; --gold:#d4a017;
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { color-scheme: dark; --bg:#15151a; --fg:#f2f2f2; --accent:#f07a52; --surface:#22222a; --muted:#9a9aa5; --gold:#f2c230; }
+  }
+  :root[data-theme="dark"] { color-scheme: dark; --bg:#15151a; --fg:#f2f2f2; --accent:#f07a52; --surface:#22222a; --muted:#9a9aa5; --gold:#f2c230; }
+  *, *::before, *::after { box-sizing: inherit; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; display: flex; align-items: center; justify-content: center;
+    background: var(--bg); color: var(--fg);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 16px; overflow-x: hidden;
+  }
+  .app { display: flex; flex-direction: column; align-items: center; gap: 14px; width: 100%; max-width: 420px; text-align: center; }
+  h1 { font-size: 1.6rem; margin: 0; }
+  p.lead { margin: 0; color: var(--muted); }
+  form { display: flex; gap: 8px; width: 100%; }
+  input[type="text"] {
+    flex: 1; min-width: 0; padding: 12px 14px; font-size: 1rem;
+    border-radius: 10px; border: 1px solid var(--muted);
+    background: var(--surface); color: var(--fg);
+  }
+  button {
+    padding: 12px 22px; font-size: 1rem; font-weight: 600;
+    border: 0; border-radius: 10px; background: var(--accent); color: #fff; cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  .special-toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; font-weight: 600; }
+  .special-toggle input { width: 18px; height: 18px; accent-color: var(--gold); cursor: pointer; }
+  .err { color: var(--accent); min-height: 1.2em; font-size: .9rem; }
+  .wheel-wrap { position: relative; width: min(340px, 86vw); aspect-ratio: 1; }
+  canvas#wheel { width: 100%; height: 100%; display: block; }
+  canvas#wheel.spin { transition: transform 4.5s cubic-bezier(.17,.67,.12,.99); }
+  .pointer {
+    position: absolute; top: -8px; left: 50%; transform: translateX(-50%); z-index: 2;
+    width: 0; height: 0;
+    border-left: 14px solid transparent; border-right: 14px solid transparent;
+    border-top: 30px solid var(--fg);
+    filter: drop-shadow(0 2px 2px rgba(0,0,0,.3));
+  }
+  #result { font-size: 3.4rem; font-weight: 800; min-height: 4.2rem; line-height: 1.2; color: var(--accent); }
+  #result.pop { animation: pop .7s cubic-bezier(.2,1.6,.4,1) both; }
+  #result.special { color: var(--gold); text-shadow: 0 0 18px rgba(242,194,48,.55); }
+  @keyframes pop {
+    0% { transform: scale(0) rotate(-12deg); opacity: 0; }
+    60% { transform: scale(1.35) rotate(4deg); opacity: 1; }
+    100% { transform: scale(1) rotate(0); }
+  }
+  #confetti { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 10; }
+  @media (prefers-reduced-motion: reduce) {
+    canvas#wheel.spin { transition-duration: .8s; }
+    #result.pop { animation: none; }
+  }
+</style>
+</head>
+<body>
+<canvas id="confetti"></canvas>
+<main class="app">
+  <h1>Wheel of Fortune</h1>
+  <p class="lead" id="tagline"></p>
+  <form id="form" autocomplete="off">
+    <input id="n" type="text" inputmode="numeric" placeholder="e.g. 12" aria-label="Natural number">
+    <button id="go" type="submit">Go</button>
+  </form>
+  <label class="special-toggle"><input type="checkbox" id="special"> add SPECIAL?</label>
+  <div class="err" id="err" role="alert"></div>
+  <div class="wheel-wrap">
+    <div class="pointer"></div>
+    <canvas id="wheel" width="680" height="680"></canvas>
+  </div>
+  <div id="result" aria-live="polite"></div>
+</main>
+
+<script>
+  const MAX = 500;
+  const COLORS = ['#e4572e', '#f3a712', '#29335c', '#8fb96a', '#3a86a8', '#bc4b51', '#7d6bb0', '#2a9d8f'];
+  const SPECIAL_COLOR = '#d4a017';
+  const canvas = document.getElementById('wheel');
+  const ctx = canvas.getContext('2d');
+  const form = document.getElementById('form');
+  const input = document.getElementById('n');
+  const specialBox = document.getElementById('special');
+  const button = document.getElementById('go');
+  const err = document.getElementById('err');
+  const result = document.getElementById('result');
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  let rotation = 0;
+  let spinning = false;
+
+  const mod = (a, m) => ((a % m) + m) % m;
+
+  // Returns n (1..MAX), or an error string, or null for empty input.
+  function parseInput() {
+    const raw = input.value.trim();
+    if (raw === '') return null;
+    if (!/^\d+$/.test(raw) || Number(raw) < 1) return 'Please enter a whole number of 1 or more.';
+    if (Number(raw) > MAX) return `Please enter a number up to ${MAX}.`;
+    return Number(raw);
+  }
+
+  // Slices: 1..n, plus one SPECIAL slice at the end if enabled.
+  function buildSlices(n, withSpecial) {
+    const s = [];
+    for (let k = 1; k <= n; k++) s.push({ label: String(k), color: COLORS[(k - 1) % COLORS.length], special: false });
+    if (withSpecial) {
+      // Avoid two equal neighbours when wrapping round to slice 1.
+      s.push({ label: 'SPECIAL', color: SPECIAL_COLOR, special: true });
+    }
+    // Fix the last numbered slice clashing with slice 1 when colours wrap.
+    if (!withSpecial && n > 1 && n % COLORS.length === 1) s[n - 1].color = COLORS[3];
+    return s;
+  }
+
+  function drawPlaceholder() {
+    const size = canvas.width, c = size / 2;
+    ctx.clearRect(0, 0, size, size);
+    ctx.beginPath();
+    ctx.arc(c, c, c - 6, 0, 2 * Math.PI);
+    ctx.fillStyle = 'rgba(128,128,128,0.2)';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(c, c, 14, 0, 2 * Math.PI);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+  }
+
+  function drawWheel(slices) {
+    const size = canvas.width, c = size / 2, radius = c - 6;
+    const T = slices.length;
+    const slice = 2 * Math.PI / T;
+    ctx.clearRect(0, 0, size, size);
+
+    slices.forEach((s, i) => {
+      const a0 = -Math.PI / 2 + i * slice;
+      const a1 = a0 + slice;
+      ctx.beginPath();
+      ctx.moveTo(c, c);
+      ctx.arc(c, c, radius, a0, a1);
+      ctx.closePath();
+      if (s.special) {
+        const g = ctx.createRadialGradient(c, c, 20, c, c, radius);
+        g.addColorStop(0, '#fff3b0');
+        g.addColorStop(1, SPECIAL_COLOR);
+        ctx.fillStyle = g;
+      } else {
+        ctx.fillStyle = s.color;
+      }
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    });
+
+    // Labels
+    const fontSize = Math.max(11, Math.min(32, 380 / T));
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    slices.forEach((s, i) => {
+      if (T > 60 && !s.special) return; // too small to label
+      const mid = -Math.PI / 2 + (i + 0.5) * slice;
+      ctx.save();
+      ctx.translate(c, c);
+      ctx.rotate(mid);
+      if (s.special) {
+        const text = T > 16 ? '★' : '★ SPECIAL';
+        const sz = T > 16 ? Math.max(16, fontSize * 1.2) : Math.min(fontSize, 260 / (text.length * 0.62));
+        ctx.font = `800 ${sz}px system-ui, sans-serif`;
+        ctx.fillStyle = '#5a3d00';
+        ctx.fillText(text, radius - 12, 0);
+      } else {
+        ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
+        ctx.fillStyle = '#fff';
+        ctx.fillText(s.label, radius - 12, 0);
+      }
+      ctx.restore();
+    });
+
+    ctx.beginPath();
+    ctx.arc(c, c, 14, 0, 2 * Math.PI);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+  }
+
+  // Live preview while typing / toggling
+  function refresh() {
+    if (spinning) return;
+    const v = parseInput();
+    if (v === null) { err.textContent = ''; drawPlaceholder(); return; }
+    if (typeof v === 'string') { err.textContent = v; drawPlaceholder(); return; }
+    err.textContent = '';
+    drawWheel(buildSlices(v, specialBox.checked));
+  }
+  input.addEventListener('input', () => { result.textContent = ''; refresh(); });
+  specialBox.addEventListener('change', () => { result.textContent = ''; refresh(); });
+
+  function spin() {
+    if (spinning) return;
+    const v = parseInput();
+    if (typeof v !== 'number') {
+      err.textContent = v || 'Please enter a whole number of 1 or more.';
+      return;
+    }
+    err.textContent = '';
+    result.textContent = '';
+    result.className = '';
+
+    const slices = buildSlices(v, specialBox.checked);
+    drawWheel(slices);
+    const T = slices.length;
+    const idx = Math.floor(Math.random() * T);   // every slice equally likely
+    const sliceDeg = 360 / T;
+    const jitter = (Math.random() - 0.5) * 0.7 * sliceDeg;
+    const targetMod = mod(-((idx + 0.5) * sliceDeg) + jitter, 360);
+    const delta = mod(targetMod - mod(rotation, 360), 360);
+    rotation += (5 + Math.floor(Math.random() * 3)) * 360 + delta;
+
+    spinning = true;
+    button.disabled = true;
+    input.disabled = true;
+    specialBox.disabled = true;
+    canvas.classList.add('spin');
+    canvas.style.transform = `rotate(${rotation}deg)`;
+
+    canvas.addEventListener('transitionend', () => {
+      spinning = false;
+      button.disabled = false;
+      input.disabled = false;
+      specialBox.disabled = false;
+      canvas.classList.remove('spin');
+      showResult(slices[idx]);
+    }, { once: true });
+  }
+
+  function showResult(s) {
+    result.textContent = s.special ? '★ SPECIAL! ★' : s.label;
+    result.className = s.special ? 'special' : '';
+    void result.offsetWidth; // restart animation
+    result.classList.add('pop');
+    if (!reduceMotion) {
+      const r = result.getBoundingClientRect();
+      confettiBurst(r.left + r.width / 2, r.top + r.height / 2, s.special);
+    }
+  }
+
+  form.addEventListener('submit', (e) => { e.preventDefault(); spin(); });
+
+  // ---- Confetti ----
+  const cc = document.getElementById('confetti');
+  const cx = cc.getContext('2d');
+  let parts = [];
+  let animating = false;
+
+  function sizeConfetti() {
+    const dpr = window.devicePixelRatio || 1;
+    cc.width = innerWidth * dpr;
+    cc.height = innerHeight * dpr;
+    cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  addEventListener('resize', sizeConfetti);
+  sizeConfetti();
+
+  function confettiBurst(x, y, special) {
+    const count = special ? 260 : 140;
+    const palette = special ? ['#f2c230', '#fff3b0', '#d4a017', '#ffffff', '#ffdd57'] : COLORS;
+    for (let i = 0; i < count; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 4 + Math.random() * (special ? 11 : 8);
+      parts.push({
+        x, y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 5,
+        w: 6 + Math.random() * 6, h: 4 + Math.random() * 4,
+        rot: Math.random() * Math.PI, vr: (Math.random() - 0.5) * 0.4,
+        color: palette[Math.floor(Math.random() * palette.length)],
+        life: 0, max: 110 + Math.random() * 60
+      });
+    }
+    if (!animating) { animating = true; requestAnimationFrame(tick); }
+  }
+
+  function tick() {
+    cx.clearRect(0, 0, innerWidth, innerHeight);
+    parts = parts.filter(p => p.life < p.max && p.y < innerHeight + 40);
+    for (const p of parts) {
+      p.life++;
+      p.vy += 0.25;          // gravity
+      p.vx *= 0.985;         // air drag
+      p.x += p.vx; p.y += p.vy; p.rot += p.vr;
+      cx.save();
+      cx.globalAlpha = Math.max(0, 1 - p.life / p.max);
+      cx.translate(p.x, p.y);
+      cx.rotate(p.rot);
+      cx.fillStyle = p.color;
+      cx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h * Math.abs(Math.cos(p.rot * 2)) + 1);
+      cx.restore();
+    }
+    if (parts.length) requestAnimationFrame(tick);
+    else { animating = false; cx.clearRect(0, 0, innerWidth, innerHeight); }
+  }
+
+  // ---- Random tagline on page load ----
+  const TAGLINES = [
+    "Today's lucky winner gets the honour of answering the next question!",
+    "Fortune favours the brave. Also the unprepared. Mostly the unprepared.",
+    "Congratulations in advance: you may have just been chosen!",
+    "Statistically, it won't be you. Statistically.",
+    "No pressure, but the wheel has already picked someone. Eyes down, everyone.",
+    "Pure chance, zero favouritism. The wheel has no favourites. Probably.",
+    "May the odds be ever in your favour (or against you, depending on the homework).",
+    "The wheel knows who didn't do the reading.",
+    "Somebody is about to have a very special day. It might be you!",
+    "Please keep your hands, feet and excuses inside the classroom at all times.",
+    "Looking busy won't help. The wheel can see right through you.",
+    "It's not a punishment, it's a prize. Sort of. Okay, not really.",
+    "Your name was drawn by the universe, not by the teacher. Take it up with the universe.",
+    "Winner gets eternal glory! And the next question."
+  ];
+  document.getElementById('tagline').textContent = TAGLINES[Math.floor(Math.random() * TAGLINES.length)];
+
+  drawPlaceholder();
+</script>
+</body>
+</html>
