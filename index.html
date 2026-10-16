@@ -283,17 +283,31 @@
   const cx = cc.getContext('2d');
   let parts = [];
   let animating = false;
+  let W = 0, H = 0;
 
   function sizeConfetti() {
     const dpr = window.devicePixelRatio || 1;
-    cc.width = innerWidth * dpr;
-    cc.height = innerHeight * dpr;
+    const r = cc.getBoundingClientRect();
+    W = r.width; H = r.height;
+    cc.width = Math.ceil(W * dpr);
+    cc.height = Math.ceil(H * dpr);
     cx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
+  function clearConfetti() {
+    cx.save();
+    cx.setTransform(1, 0, 0, 1, 0, 0);
+    cx.clearRect(0, 0, cc.width, cc.height);
+    cx.restore();
+  }
   addEventListener('resize', sizeConfetti);
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', sizeConfetti);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { parts = []; clearConfetti(); }
+  });
   sizeConfetti();
 
   function confettiBurst(x, y, special) {
+    if (!animating) sizeConfetti();
     const count = special ? 260 : 140;
     const palette = special ? ['#f2c230', '#fff3b0', '#d4a017', '#ffffff', '#ffdd57'] : COLORS;
     for (let i = 0; i < count; i++) {
@@ -313,8 +327,8 @@
   }
 
   function tick() {
-    cx.clearRect(0, 0, innerWidth, innerHeight);
-    parts = parts.filter(p => p.life < p.max && p.y < innerHeight + 40);
+    clearConfetti();
+    parts = parts.filter(p => p.life < p.max && p.y < H + 40);
     for (const p of parts) {
       p.life++;
       p.vy += 0.25;          // gravity
@@ -329,7 +343,7 @@
       cx.restore();
     }
     if (parts.length) requestAnimationFrame(tick);
-    else { animating = false; cx.clearRect(0, 0, innerWidth, innerHeight); }
+    else { animating = false; clearConfetti(); }
   }
 
   // ---- Random tagline on page load ----
