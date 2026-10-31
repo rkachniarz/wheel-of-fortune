@@ -60,6 +60,13 @@
     100% { transform: scale(1) rotate(0); }
   }
   #confetti { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 10; }
+  .options { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 22px; }
+  .drawn { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; width: 100%; }
+  .drawn[hidden] { display: none; }
+  .drawn-label { color: var(--muted); font-weight: 600; font-size: .9rem; }
+  .drawn-list { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; max-height: 5.6em; overflow-y: auto; }
+  .chip { min-width: 2em; padding: 2px 8px; border-radius: 999px; background: var(--surface); border: 1px solid var(--muted); font-size: .85rem; font-weight: 600; }
+  button.small { padding: 6px 14px; font-size: .85rem; background: transparent; color: var(--fg); border: 1px solid var(--muted); }
   /* Wide screens (e.g. 1080p): big wheel on the left, controls and result on the right */
   @media (min-width: 900px) and (min-aspect-ratio: 5/4) {
     body { padding: 24px 3vw; }
@@ -74,6 +81,8 @@
     input[type="text"], button { font-size: clamp(1.1rem, 1.5vw, 1.6rem); padding: .7em 1em; }
     .special-toggle { font-size: clamp(1.05rem, 1.4vw, 1.5rem); }
     .special-toggle input { width: 1.3em; height: 1.3em; }
+    .chip, .drawn-label, button.small { font-size: clamp(.9rem, 1.15vw, 1.3rem); }
+    .drawn-list { max-height: 7em; }
     .pointer { border-left-width: 22px; border-right-width: 22px; border-top-width: 46px; top: -12px; }
   }
   @media (prefers-reduced-motion: reduce) {
@@ -92,8 +101,16 @@
     <input id="n" type="text" inputmode="numeric" placeholder="e.g. 12" aria-label="Natural number">
     <button id="go" type="submit">Go</button>
   </form>
-  <label class="special-toggle"><input type="checkbox" id="special"> add SPECIAL?</label>
+  <div class="options">
+    <label class="special-toggle"><input type="checkbox" id="special"> add SPECIAL?</label>
+    <label class="special-toggle"><input type="checkbox" id="noRepeat"> remove drawn numbers</label>
+  </div>
   <div class="err" id="err" role="alert"></div>
+  <div class="drawn" id="drawnWrap" hidden>
+    <span class="drawn-label" id="drawnLabel">Drawn:</span>
+    <div class="drawn-list" id="drawnList"></div>
+    <button type="button" class="small" id="reset">Reset</button>
+  </div>
   </div>
   <div class="wheel-wrap">
     <div class="pointer"></div>
@@ -111,6 +128,12 @@
   const form = document.getElementById('form');
   const input = document.getElementById('n');
   const specialBox = document.getElementById('special');
+  const noRepeat = document.getElementById('noRepeat');
+  const drawnWrap = document.getElementById('drawnWrap');
+  const drawnList = document.getElementById('drawnList');
+  const drawnLabel = document.getElementById('drawnLabel');
+  const resetBtn = document.getElementById('reset');
+  const drawn = new Set();   // numbers already picked (used when "remove drawn numbers" is on)
   const button = document.getElementById('go');
   const err = document.getElementById('err');
   const result = document.getElementById('result');
@@ -131,16 +154,41 @@
   }
 
   // Slices: 1..n, plus one SPECIAL slice at the end if enabled.
-  function buildSlices(n, withSpecial) {
+  function buildSlices(n, withSpecial, skip) {
     const s = [];
-    for (let k = 1; k <= n; k++) s.push({ label: String(k), color: COLORS[(k - 1) % COLORS.length], special: false });
+    for (let k = 1; k <= n; k++) {
+      if (skip && skip.has(k)) continue;
+      s.push({ label: String(k), color: COLORS[s.length % COLORS.length], special: false });
+    }
+    const numbers = s.length;
+    if (numbers === 0) return [];   // everyone has been drawn
     if (withSpecial) {
       // Avoid two equal neighbours when wrapping round to slice 1.
       s.push({ label: 'SPECIAL', color: SPECIAL_COLOR, special: true });
     }
     // Fix the last numbered slice clashing with slice 1 when colours wrap.
-    if (!withSpecial && n > 1 && n % COLORS.length === 1) s[n - 1].color = COLORS[3];
+    if (!withSpecial && numbers > 1 && numbers % COLORS.length === 1) s[numbers - 1].color = COLORS[3];
     return s;
+  }
+
+  const ALL_DRAWN_MSG = 'All numbers have been drawn. Press Reset to start over.';
+
+  function getSlices(n) {
+    return buildSlices(n, specialBox.checked, noRepeat.checked ? drawn : null);
+  }
+
+  function renderDrawn() {
+    const v = parseInput();
+    const max = typeof v === 'number' ? v : Infinity;
+    const list = [...drawn].filter(k => k <= max);
+    drawnWrap.hidden = !(noRepeat.checked && list.length);
+    drawnLabel.textContent = Number.isFinite(max) ? `Drawn (${list.length}/${max}):` : 'Drawn:';
+    drawnList.replaceChildren(...list.map(k => {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.textContent = k;
+      return chip;
+    }));
   }
 
   function drawPlaceholder() {
@@ -218,14 +266,25 @@
   // Live preview while typing / toggling
   function refresh() {
     if (spinning) return;
+    renderDrawn();
     const v = parseInput();
     if (v === null) { err.textContent = ''; drawPlaceholder(); return; }
     if (typeof v === 'string') { err.textContent = v; drawPlaceholder(); return; }
+    const slices = getSlices(v);
+    if (!slices.length) { err.textContent = ALL_DRAWN_MSG; drawPlaceholder(); return; }
     err.textContent = '';
-    drawWheel(buildSlices(v, specialBox.checked));
+    drawWheel(slices);
   }
   input.addEventListener('input', () => { result.textContent = ''; refresh(); });
   specialBox.addEventListener('change', () => { result.textContent = ''; refresh(); });
+  noRepeat.addEventListener('change', () => { result.textContent = ''; refresh(); });
+  resetBtn.addEventListener('click', () => {
+    if (spinning) return;
+    drawn.clear();
+    result.textContent = '';
+    result.className = '';
+    refresh();
+  });
 
   function spin() {
     if (spinning) return;
@@ -238,7 +297,8 @@
     result.textContent = '';
     result.className = '';
 
-    const slices = buildSlices(v, specialBox.checked);
+    const slices = getSlices(v);
+    if (!slices.length) { err.textContent = ALL_DRAWN_MSG; return; }
     drawWheel(slices);
     const T = slices.length;
     const idx = Math.floor(Math.random() * T);   // every slice equally likely
@@ -252,6 +312,8 @@
     button.disabled = true;
     input.disabled = true;
     specialBox.disabled = true;
+    noRepeat.disabled = true;
+    resetBtn.disabled = true;
     canvas.classList.add('spin');
     canvas.style.transform = `rotate(${rotation}deg)`;
 
@@ -260,8 +322,12 @@
       button.disabled = false;
       input.disabled = false;
       specialBox.disabled = false;
+      noRepeat.disabled = false;
+      resetBtn.disabled = false;
       canvas.classList.remove('spin');
-      showResult(slices[idx]);
+      const picked = slices[idx];
+      if (noRepeat.checked && !picked.special) { drawn.add(Number(picked.label)); renderDrawn(); }
+      showResult(picked);
     }, { once: true });
   }
 
